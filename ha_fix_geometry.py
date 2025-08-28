@@ -10,9 +10,16 @@ def fix_invalid_and_clean(layer):
     original_count = layer.featureCount()
     if layer.readOnly():
         layer.setReadOnly(False)
+    # Update 20250825
+    cleaned = processing.run("native:removeduplicatevertices", {
+        'INPUT': layer,
+        'TOLERANCE': 0.1,
+        'USE_Z_VALUE': False,
+        'OUTPUT': 'TEMPORARY_OUTPUT'
+    })['OUTPUT']
     # Step 1: check validity
     validity = processing.run("qgis:checkvalidity", {
-        'INPUT_LAYER': layer,
+        'INPUT_LAYER': cleaned,
         'METHOD': 1,
         'IGNORE_RING_SELF_INTERSECTION': False,
         'VALID_OUTPUT': 'TEMPORARY_OUTPUT',
@@ -52,35 +59,25 @@ def fix_invalid_and_clean(layer):
         'OUTPUT': 'TEMPORARY_OUTPUT'
     })['OUTPUT']
 
-    # Step 3: remove duplicated vertices from fixed features
-    cleaned = processing.run("native:removeduplicatevertices", {
-        'INPUT': fixed,
-        'TOLERANCE': 0.1,
-        'USE_Z_VALUE': False,
-        'OUTPUT': 'TEMPORARY_OUTPUT'
-    })['OUTPUT']
-
-    # Step 4: replace invalid features in original layer
+    # Step 4: Add fixed features to the original layer (don't delete anything)
     layer.startEditing()
-    for f in layer.getFeatures():
-        if f['fid'] in invalid_ids:
-            layer.deleteFeature(f.id())
-
-    cleaned.selectAll()
+    
+    # Copy all fixed features to the original layer
+    fixed.selectAll()
     iface.mapCanvas().refresh()
-    iface.copySelectionToClipboard(cleaned)
+    iface.copySelectionToClipboard(fixed)
     iface.pasteFromClipboard(layer)
+    
     layer.commitChanges()
-    iface.messageBar().pushSuccess("Geometry Fixer", f"In layer {layer.name()}, {len(invalid_ids)} invalid features fixed and cleaned.")
-    fixed_count = layer.featureCount()
+    
+    # Calculate statistics
+    final_count = layer.featureCount()
+    added_features_count = final_count - original_count
+    
+    iface.messageBar().pushSuccess("Geometry Fixer", 
+        f"In layer {layer.name()}, {len(invalid_ids)} invalid features fixed and added as new features. Original features preserved.")
 
-    unfixed_geometry_count =original_count - fixed_count
-    if unfixed_geometry_count == 0:
-        fixed_geometry_count = len(invalid_ids)
-    else:
-        fixed_geometry_count = f"{len(invalid_ids)} has been fixed, {unfixed_geometry_count} has been removed as empty geometry"
-
-        # Step 5: Pop-up summary
+    # Step 5: Pop-up summary
     features_html = "<ul>"
     for s in invalid_list:
         features_html += f"<li>{s}</li>"
@@ -89,14 +86,16 @@ def fix_invalid_and_clean(layer):
     msg = f"""
         <h3>🧹 Geometry Fix Report</h3>
         <b>Layer:</b> {layer.name()}<br>
-        <b>Invalid features:</b> {len(invalid_ids)}<br>
-        <b>Fixed features:</b> {fixed_geometry_count}<br>
-        <b>Details:</b>{features_html}
+        <b>Original features:</b> {original_count}<br>
+        <b>Invalid features found:</b> {len(invalid_ids)}<br>
+        <b>Fixed features added:</b> {added_features_count}<br>
+        <b>Total features now:</b> {final_count}<br>
+        <b>Note:</b> Original problematic features were preserved. You may need to manually delete them (area value as 0).<br>
+        <b>Details of invalid features:</b>{features_html}
     """
     popup = QMessageBox()
     popup.setWindowTitle("Geometry Fix Summary")
     popup.setTextFormat(Qt.TextFormat.RichText) 
     popup.setText(msg)
     popup.exec_()
-
     
